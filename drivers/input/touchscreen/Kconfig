@@ -1349,4 +1349,6 @@ source "drivers/input/touchscreen/nt36528a_spi/Kconfig"
 
 source "drivers/input/touchscreen/ft8057m_spi/Kconfig"
 
+source "drivers/input/touchscreen/lct_tp/Kconfig"
+
 endif
