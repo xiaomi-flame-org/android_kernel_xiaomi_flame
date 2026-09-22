@@ -121,3 +121,4 @@ obj-$(CONFIG_TOUCHSCREEN_GOODIX_BRL)	+= goodix_berlin_driver/
 obj-$(CONFIG_TOUCHSCREEN_NT36xxx_HOSTDL_SPI)	+= nt36528a_spi/
 obj-$(CONFIG_TOUCHSCREEN_FTS_SPI) += ft8057m_spi/
 obj-$(CONFIG_TOUCHSCREEN_COMMON)	+= lct_tp/
+obj-$(CONFIG_TOUCHSCREEN_COMMON)    += xiaomi_tp/
