@@ -31,6 +31,8 @@
 #include "qmi.h"
 #include "debug.h"
 #include "genl.h"
+#include <asm/setup.h>
+#include <linux/bootconfig.h>
 
 #define WLFW_SERVICE_WCN_INS_ID_V01	3
 #define WLFW_SERVICE_INS_ID_V01		0
@@ -43,6 +45,14 @@
 #define BIN_BDF_FILE_NAME		"bdwlan.bin"
 #define BIN_BDF_FILE_NAME_PREFIX	"bdwlan."
 #define REGDB_FILE_NAME			"regdb.bin"
+#define WCN3950_Family_ID	0x4007
+#define WCN3988_Family_ID	0x4002
+#define BDF_FILE_C3F_CN 	"bd3fcn.bin"
+#define BDF_FILE_C3F_IN 	"bd3fin.bin"
+#define BDF_FILE_C3F_JP 	"bd3fjp.bin"
+#define BDF_FILE_C3F_GL 	"bd3fgl.bin"
+#define DEFAULT3955_BDF_FILE 	"bd3950.bin"
+#define DEFAULT3988_BDF_FILE 	"bd3988.bin"
 
 #define QDSS_TRACE_CONFIG_FILE "qdss_trace_config.cfg"
 
@@ -53,6 +63,10 @@
 #define DMS_MAC_NOT_PROVISIONED		16
 #define BDWLAN_SIZE			6
 #define UMC_CHIP_ID                    0x4320
+#define UMC_CHIP_ID2 	0x130
+#define TSMC_CHIP_ID 	0x4130
+#define SMIC_CHIP_ID 	0x5130
+#define TSMC_CHIP_ID2   0x150
 #define MAX_SHADOW_REG_RESERVED		2
 #define MAX_NUM_SHADOW_REG_V3		(QMI_WLFW_MAX_NUM_SHADOW_REG_V3_USAGE_V01 - \
 					MAX_SHADOW_REG_RESERVED)
@@ -77,6 +91,13 @@ void icnss_ignore_fw_timeout(bool ignore) { }
 	icnss_pr_err("fatal: "_fmt, ##__VA_ARGS__);	\
 	ICNSS_QMI_ASSERT();				\
 	} while (0)
+
+#define MAX_RETRIES 10
+#define RETRY_DELAY_MS 100
+
+static char __platform_cmdline[2048];
+static char *command_line = __platform_cmdline;
+char filename_bdf[ICNSS_MAX_FILE_NAME];
 
 int wlfw_msa_mem_info_send_sync_msg(struct icnss_priv *priv)
 {
@@ -753,6 +774,12 @@ int wlfw_cap_send_sync_msg(struct icnss_priv *priv)
 
 	priv->stats.cap_resp++;
 
+	icnss_pr_info("priv->chip_info.chip_id=%d,resp->chip_info.chip_id=%d\n",priv->chip_info.chip_id,resp->chip_info.chip_id);
+	icnss_pr_info("priv->chip_info.chip_family=%d,resp->chip_info.chip_family=%d\n",priv->chip_info.chip_family,resp->chip_info.chip_family);
+	icnss_pr_info("resp->board_info_valid=%d\n",resp->board_info_valid);
+	icnss_pr_info("resp->soc_info_valid=%d\n",resp->soc_info_valid);
+	icnss_pr_info("resp->fw_version_info_valid=%d\n",resp->fw_version_info_valid);
+
 	if (resp->chip_info_valid) {
 		priv->chip_info.chip_id = resp->chip_info.chip_id;
 		priv->chip_info.chip_family = resp->chip_info.chip_family;
@@ -788,14 +815,18 @@ int wlfw_cap_send_sync_msg(struct icnss_priv *priv)
 
 	if (resp->foundry_name_valid)
 		priv->foundry_name = resp->foundry_name[0];
-	else if (resp->chip_info_valid && priv->chip_info.chip_id == UMC_CHIP_ID)
+	else if (resp->chip_info_valid && ((priv->chip_info.chip_id == UMC_CHIP_ID) || (priv->chip_info.chip_id == UMC_CHIP_ID2)))
 		priv->foundry_name = 'u';
 
-	icnss_pr_dbg("Capability, chip_id: 0x%x, chip_family: 0x%x, board_id: 0x%x, soc_id: 0x%x",
+	else if (resp->chip_info_valid && ((priv->chip_info.chip_id == TSMC_CHIP_ID) || (resp->chip_info_valid && priv->chip_info.chip_id == TSMC_CHIP_ID2)))
+		priv->foundry_name = 't';
+	else if (resp->chip_info_valid && priv->chip_info.chip_id == SMIC_CHIP_ID)
+		priv->foundry_name = 's';
+	icnss_pr_info("Capability, chip_id: 0x%x, chip_family: 0x%x, board_id: 0x%x, soc_id: 0x%x",
 		     priv->chip_info.chip_id, priv->chip_info.chip_family,
 		     priv->board_id, priv->soc_id);
 
-	icnss_pr_dbg("fw_version: 0x%x, fw_build_timestamp: %s, fw_build_id: %s",
+	icnss_pr_info("fw_version: 0x%x, fw_build_timestamp: %s, fw_build_id: %s",
 		     priv->fw_version_info.fw_version,
 		     priv->fw_version_info.fw_build_timestamp,
 		     priv->fw_build_id);
@@ -817,10 +848,15 @@ int icnss_qmi_get_dms_mac(struct icnss_priv *priv)
 	struct dms_get_mac_address_resp_msg_v01 resp;
 	struct qmi_txn txn;
 	int ret = 0;
+	int retry_count = 0;
 
-	if  (!test_bit(ICNSS_QMI_DMS_CONNECTED, &priv->state)) {
-		icnss_pr_err("DMS QMI connection not established\n");
-		return -EAGAIN;
+	while (!test_bit(ICNSS_QMI_DMS_CONNECTED, &priv->state)) {
+		if (retry_count >= MAX_RETRIES) {
+			icnss_pr_err("DMS QMI connection not established after %d retries\n", MAX_RETRIES);
+			return -EAGAIN;
+		}
+		msleep(RETRY_DELAY_MS);
+		retry_count++;
 	}
 	icnss_pr_dbg("Requesting DMS MAC address");
 
@@ -1006,6 +1042,35 @@ void icnss_dms_deinit(struct icnss_priv *priv)
 	qmi_handle_release(&priv->qmi_dms);
 }
 
+/*----------------------------------------------------------------------------*/
+/*!
+ * get cmdline from bootargs
+*/
+/*----------------------------------------------------------------------------*/
+const char *icnss_wlan_get_cmdline(void)
+{
+	struct device_node *of_chosen = NULL;
+	char *bootargs = NULL;
+
+	if (__platform_cmdline[0] != 0) {
+		return command_line;
+	}
+	of_chosen = of_find_node_by_path("/chosen");
+	if (of_chosen) {
+		bootargs = (char *)of_get_property(
+					of_chosen, "bootargs", NULL);
+		if (!bootargs) {
+			icnss_pr_info("%s: failed to get bootargs\n", __func__);
+                }
+		else {
+			strcpy(__platform_cmdline, bootargs);
+		}
+	} else {
+		icnss_pr_info("%s: failed to get /chosen\n", __func__);
+	}
+	return command_line;
+}
+
 static int icnss_get_bdf_file_name(struct icnss_priv *priv,
 				   u32 bdf_type, char *filename,
 				   u32 filename_len)
@@ -1013,7 +1078,8 @@ static int icnss_get_bdf_file_name(struct icnss_priv *priv,
 	char filename_tmp[ICNSS_MAX_FILE_NAME];
 	char foundry_specific_filename[ICNSS_MAX_FILE_NAME];
 	int ret = 0;
-
+	char fname[ICNSS_MAX_FILE_NAME]={0};
+	icnss_pr_info("icnss_get_bdf_file_name bdf_type:%d\n",bdf_type);
 	switch (bdf_type) {
 	case ICNSS_BDF_ELF:
 		if (priv->board_id == 0xFF)
@@ -1029,8 +1095,49 @@ static int icnss_get_bdf_file_name(struct icnss_priv *priv,
 				 priv->board_id & 0xFF);
 		break;
 	case ICNSS_BDF_BIN:
-		if (priv->board_id == 0xFF)
-			snprintf(filename_tmp, filename_len, BIN_BDF_FILE_NAME);
+		if (priv->board_id == 0xFF){
+			icnss_wlan_get_cmdline();
+			if(priv->chip_info.chip_family == WCN3950_Family_ID){
+				if (strstr(command_line, "wlancmdline.hwc=CN")) {
+					memset(fname, 0, sizeof(filename_tmp));
+					strcpy(fname,BDF_FILE_C3F_CN);
+					scnprintf(filename_tmp, ICNSS_MAX_FILE_NAME, "%s", fname);
+					icnss_pr_info("Use CN bd3fcnx.bin bdf\n");
+				} else if (strstr(command_line, "wlancmdline.hwc=India")){
+					memset(fname, 0, sizeof(filename_tmp));
+					strcpy(fname,BDF_FILE_C3F_IN);
+					scnprintf(filename_tmp, ICNSS_MAX_FILE_NAME, "%s", fname);
+					icnss_pr_info("Use India bd3finx.bin bdf\n");
+				} else {
+					memset(fname, 0, sizeof(filename_tmp));
+					strcpy(fname,DEFAULT3955_BDF_FILE);
+					scnprintf(filename_tmp, ICNSS_MAX_FILE_NAME, "%s", fname);
+					icnss_pr_info("Use default bd3950x.bin bdf\n");
+					icnss_pr_info("Hwname=flame,unknow hwc,use default bdf\n");
+				}
+			}
+			else if(priv->chip_info.chip_family == WCN3988_Family_ID){
+				if (strstr(command_line, "wlancmdline.hwc=Japan")){
+					memset(fname, 0, sizeof(filename_tmp));
+					strcpy(fname,BDF_FILE_C3F_JP);
+					scnprintf(filename_tmp, ICNSS_MAX_FILE_NAME, "%s", fname);
+					icnss_pr_info("Use Japan bd3fjpx.bin bdf\n");
+				}
+				else if (strstr(command_line, "wlancmdline.hwc=Global")){
+					memset(fname, 0, sizeof(filename_tmp));
+					strcpy(fname,BDF_FILE_C3F_GL);
+					scnprintf(filename_tmp, ICNSS_MAX_FILE_NAME, "%s", fname);
+					icnss_pr_info("Use Global bd3fglx.bin bdf\n");
+				}
+				else {
+					memset(fname, 0, sizeof(filename_tmp));
+					strcpy(fname,DEFAULT3988_BDF_FILE);
+					scnprintf(filename_tmp, ICNSS_MAX_FILE_NAME, "%s", fname);
+					icnss_pr_info("Use default bd3988x.bin bdf\n");
+					icnss_pr_info("Hwname=flame,unknow hwc,use default bdf\n");
+				}
+			}
+		}
 		else if (priv->board_id >= WLAN_BOARD_ID_INDEX)
 			snprintf(filename_tmp, filename_len,
 				 BIN_BDF_FILE_NAME_PREFIX "%03x",
@@ -1039,6 +1146,7 @@ static int icnss_get_bdf_file_name(struct icnss_priv *priv,
 			snprintf(filename_tmp, filename_len,
 				 BIN_BDF_FILE_NAME_PREFIX "b%02x",
 				 priv->board_id);
+		icnss_pr_info("Invalid foundry_name type: %s\n",priv->foundry_name);
 		if (priv->foundry_name) {
 			strlcpy(foundry_specific_filename, filename_tmp, ICNSS_MAX_FILE_NAME);
 			memmove(foundry_specific_filename + BDWLAN_SIZE + 1,
@@ -1046,6 +1154,7 @@ static int icnss_get_bdf_file_name(struct icnss_priv *priv,
 				BDWLAN_SIZE - 1);
 			foundry_specific_filename[BDWLAN_SIZE] = priv->foundry_name;
 			foundry_specific_filename[ICNSS_MAX_FILE_NAME - 1] = '\0';
+			icnss_pr_err("%s: Updated BDF file : %s", __func__, foundry_specific_filename);
 			strlcpy(filename_tmp, foundry_specific_filename, ICNSS_MAX_FILE_NAME);
 		}
 		break;
@@ -1060,8 +1169,11 @@ static int icnss_get_bdf_file_name(struct icnss_priv *priv,
 	}
 
 	if (!ret)
+	{
+		strlcpy(filename_bdf, filename_tmp, ICNSS_MAX_FILE_NAME);
 		icnss_add_fw_prefix_name(priv, filename, filename_tmp);
-
+		icnss_pr_info("bdf_file_name:%s,file len:%d,file_type:%d \n",filename,filename_len,bdf_type);
+	}
 	return ret;
 }
 
@@ -1090,7 +1202,7 @@ int icnss_wlfw_bdf_dnld_send_sync(struct icnss_priv *priv, u32 bdf_type)
 	unsigned int remaining;
 	int ret = 0;
 
-	icnss_pr_dbg("Sending %s download message, state: 0x%lx, type: %d\n",
+	icnss_pr_info("Sending %s download message, state: 0x%lx, type: %d\n",
 		     icnss_bdf_type_to_str(bdf_type), priv->state, bdf_type);
 
 	req = kzalloc(sizeof(*req), GFP_KERNEL);
@@ -1118,7 +1230,7 @@ int icnss_wlfw_bdf_dnld_send_sync(struct icnss_priv *priv, u32 bdf_type)
 	temp = fw_entry->data;
 	remaining = fw_entry->size;
 
-	icnss_pr_dbg("Downloading %s: %s, size: %u\n",
+	icnss_pr_info("Downloading %s: %s, size: %u\n",
 		     icnss_bdf_type_to_str(bdf_type), filename, remaining);
 
 	while (remaining) {
@@ -1332,7 +1444,7 @@ int icnss_wlfw_qdss_dnld_send_sync(struct icnss_priv *priv)
 	unsigned int remaining;
 	int ret = 0;
 
-	icnss_pr_dbg("Sending QDSS config download message, state: 0x%lx\n",
+	icnss_pr_info("Sending QDSS config download message, state: 0x%lx\n",
 		     priv->state);
 
 	req = kzalloc(sizeof(*req), GFP_KERNEL);
@@ -3190,7 +3302,7 @@ int wlfw_host_cap_send_sync(struct icnss_priv *priv)
 	u64 iova_start = 0, iova_size = 0,
 	    iova_ipa_start = 0, iova_ipa_size = 0;
 
-	icnss_pr_dbg("Sending host capability message, state: 0x%lx\n",
+	icnss_pr_info("Sending host capability message, state: 0x%lx\n",
 		    priv->state);
 
 	req = kzalloc(sizeof(*req), GFP_KERNEL);
@@ -3211,7 +3323,7 @@ int wlfw_host_cap_send_sync(struct icnss_priv *priv)
 
 	req->cal_done_valid = 1;
 	req->cal_done = priv->cal_done;
-	icnss_pr_dbg("Calibration done is %d\n", priv->cal_done);
+	icnss_pr_info("Calibration done is %d\n", priv->cal_done);
 
 	if (priv->smmu_s1_enable &&
 	    !icnss_get_iova(priv, &iova_start, &iova_size) &&

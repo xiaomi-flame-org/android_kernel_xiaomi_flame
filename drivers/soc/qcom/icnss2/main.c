@@ -3809,6 +3809,44 @@ static ssize_t hw_trc_override_store(struct device *dev,
 	return count;
 }
 
+static ssize_t wlan_chip_show(struct device *dev, struct device_attribute *attr, char *buf)
+{
+	struct icnss_priv *priv = dev_get_drvdata(dev);
+	ssize_t len = 0;
+	if (priv) {
+		len = sprintf(buf, "0x%x\n", priv->chip_info.chip_id);
+		icnss_pr_dbg("Successfully written to chipid");
+	} else {
+		icnss_pr_dbg("chid id priv is NULL\n");
+	}
+	return len;
+}
+
+static ssize_t wlan_family_show(struct device *dev, struct device_attribute *attr, char *buf)
+{
+	struct icnss_priv *priv = dev_get_drvdata(dev);
+	ssize_t len = 0;
+	if (priv) {
+		len = sprintf(buf, "0x%x\n", priv->chip_info.chip_family);
+		icnss_pr_dbg("Successfully written to chipfamily");
+	} else {
+		icnss_pr_dbg("chid family priv is NULL\n");
+	}
+	return len;
+}
+
+static ssize_t wlan_bdf_show(struct device *dev, struct device_attribute *attr, char *buf)
+{
+	ssize_t len = 0;
+	if(filename_bdf[0] != '\0') {
+		len = sprintf(buf, "%s\n", filename_bdf);
+		icnss_pr_dbg("Successfully written to chipbdf");
+	} else {
+		icnss_pr_dbg("chid bdf filename_bdf is NULL\n");
+	}
+	return len;
+}
+
 static void icnss_wpss_load(struct work_struct *wpss_load_work)
 {
 	struct icnss_priv *priv = icnss_get_plat_priv();
@@ -3895,6 +3933,9 @@ static DEVICE_ATTR_WO(qdss_conf_download);
 static DEVICE_ATTR_WO(hw_trc_override);
 static DEVICE_ATTR_WO(wpss_boot);
 static DEVICE_ATTR_WO(wlan_en_delay);
+static DEVICE_ATTR_RO(wlan_chip);
+static DEVICE_ATTR_RO(wlan_family);
+static DEVICE_ATTR_RO(wlan_bdf);
 
 static struct attribute *icnss_attrs[] = {
 	&dev_attr_qdss_tr_start.attr,
@@ -3903,6 +3944,9 @@ static struct attribute *icnss_attrs[] = {
 	&dev_attr_hw_trc_override.attr,
 	&dev_attr_wpss_boot.attr,
 	&dev_attr_wlan_en_delay.attr,
+	&dev_attr_wlan_chip.attr,
+	&dev_attr_wlan_family.attr,
+	&dev_attr_wlan_bdf.attr,
 	NULL,
 };
 
