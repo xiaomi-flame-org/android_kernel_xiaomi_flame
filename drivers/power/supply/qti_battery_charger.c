@@ -1483,7 +1483,7 @@ static int battery_psy_get_prop(struct power_supply *psy,
 	int raw_soc = 25;
 	int vbat_uv = 0;
 	struct psy_state *xm_pst = &bcdev->psy_list[PSY_TYPE_XM];
-	static last_raw_soc;
+	static int last_raw_soc;
 	bool soc_reduce = false;
 
 	pval->intval = -ENODATA;
